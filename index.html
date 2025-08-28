@@ -2,10 +2,10 @@
 <html>
 <head>
   <title>Teachable Machine Image Model (Mobile)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- ทำ responsive -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- responsive -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script> <!-- Added MQTT.js library -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script> <!-- ✅ MQTT.js -->
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -25,11 +25,6 @@
       margin: 10px;
       font-size: 1.2em;
     }
-    #mqtt-container {
-      margin: 10px;
-      font-size: 1.2em;
-      color: blue;
-    }
     button {
       padding: 10px 20px;
       font-size: 1em;
@@ -44,64 +39,47 @@
   <button type="button" onclick="stop()">Stop</button>
   <div id="webcam-container"></div>
   <div id="label-container"></div>
-  <div id="mqtt-container">MQTT Status: Disconnected</div> <!-- Added div for MQTT status and received messages -->
   <script type="text/javascript">
     const URL = "https://teachablemachine.withgoogle.com/models/ahaxFn-GG/";
     let model, webcam, labelContainer, maxPredictions;
-    let client; // MQTT client
+
+    // ✅ กำหนด MQTT
+    const broker = "wss://broker.hivemq.com:8884/mqtt"; 
+    const topic = "teachable/shape"; // ส่งค่าไปที่ Topic นี้
+    const client = mqtt.connect(broker);
+
+    client.on("connect", () => {
+      console.log("✅ Connected to HiveMQ Broker");
+    });
+
+    client.on("error", (err) => {
+      console.error("❌ MQTT Error:", err);
+    });
 
     async function init(facingMode) {
       const modelURL = URL + "model.json";
       const metadataURL = URL + "metadata.json";
       model = await tmImage.load(modelURL, metadataURL);
       maxPredictions = model.getTotalClasses();
-      // ตั้งค่า Webcam สำหรับมือถือ โดยระบุ facingMode
-      webcam = new tmImage.Webcam(224, 224, false); // ใช้ 224x224 เหมือนเดิม
+
+      webcam = new tmImage.Webcam(224, 224, false);
       try {
-        await webcam.setup({ facingMode: facingMode }); // เลือกกล้องหน้า (user) หรือหลัง (environment)
+        await webcam.setup({ facingMode: facingMode });
         await webcam.play();
-        if (!webcam.canvas) {
-          throw new Error("Webcam canvas is not initialized");
-        }
-        console.log("Webcam initialized, width:", webcam.canvas.width, "facingMode:", facingMode);
+        if (!webcam.canvas) throw new Error("Webcam canvas is not initialized");
         window.requestAnimationFrame(loop);
       } catch (e) {
         console.error("Webcam setup failed:", e);
         document.getElementById("label-container").innerText = "Error: " + e.message;
         return;
       }
+
       document.getElementById("webcam-container").appendChild(webcam.canvas);
       labelContainer = document.getElementById("label-container");
-      labelContainer.innerHTML = ""; // ล้างผลลัพธ์เก่า
+      labelContainer.innerHTML = "";
       for (let i = 0; i < maxPredictions; i++) {
         labelContainer.appendChild(document.createElement("div"));
       }
-
-      // Connect to HiveMQ public broker via WebSocket
-      client = mqtt.connect('ws://broker.hivemq.com:8000/mqtt');
-      client.on('connect', function () {
-        console.log('Connected to MQTT broker');
-        document.getElementById('mqtt-container').innerHTML = 'MQTT Status: Connected<br>';
-        // Subscribe to a response topic to receive values
-        client.subscribe('teachable/response', function (err) {
-          if (!err) {
-            console.log('Subscribed to teachable/response');
-          } else {
-            console.error('Subscription error:', err);
-          }
-        });
-      });
-
-      client.on('message', function (topic, message) {
-        // Display received message in the MQTT container
-        console.log('Received message on topic ' + topic + ': ' + message.toString());
-        document.getElementById('mqtt-container').innerHTML += 'Received: ' + message.toString() + '<br>';
-      });
-
-      client.on('error', function (err) {
-        console.error('MQTT connection error:', err);
-        document.getElementById('mqtt-container').innerHTML = 'MQTT Status: Error - ' + err.message;
-      });
     }
 
     async function loop() {
@@ -112,27 +90,28 @@
 
     async function predict() {
       const prediction = await model.predict(webcam.canvas);
-      let maxProb = 0;
-      let topClass = '';
+
+      // หาค่าที่มีโอกาสสูงสุด
+      let bestClass = prediction[0].className;
+      let bestProb = prediction[0].probability;
+
+      for (let i = 1; i < maxPredictions; i++) {
+        if (prediction[i].probability > bestProb) {
+          bestClass = prediction[i].className;
+          bestProb = prediction[i].probability;
+        }
+      }
+
+      // แสดงผลทั้งหมด
       for (let i = 0; i < maxPredictions; i++) {
         const classPrediction = prediction[i].className + ": " + prediction[i].probability.toFixed(2);
         labelContainer.childNodes[i].innerHTML = classPrediction;
-        // Find the top prediction
-        if (prediction[i].probability > maxProb) {
-          maxProb = prediction[i].probability;
-          topClass = prediction[i].className;
-        }
       }
-      // Publish the top prediction to MQTT topic if connected
-      if (client && client.connected) {
-        const payload = topClass + ': ' + maxProb.toFixed(2);
-        client.publish('teachable/prediction', payload, function (err) {
-          if (err) {
-            console.error('Publish error:', err);
-          } else {
-            console.log('Published: ' + payload);
-          }
-        });
+
+      // ✅ ส่งค่าเฉพาะ class ที่มั่นใจ > 0.8
+      if (bestProb > 0.8) {
+        client.publish(topic, JSON.stringify({ shape: bestClass, confidence: bestProb.toFixed(2) }));
+        console.log("📤 ส่งค่าไป MQTT:", bestClass, bestProb.toFixed(2));
       }
     }
 
@@ -141,10 +120,6 @@
         webcam.stop();
         document.getElementById("webcam-container").innerHTML = '';
         document.getElementById("label-container").innerHTML = '';
-      }
-      if (client) {
-        client.end();
-        document.getElementById('mqtt-container').innerHTML = 'MQTT Status: Disconnected';
       }
     }
   </script>
