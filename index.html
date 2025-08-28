@@ -108,10 +108,17 @@
         labelContainer.childNodes[i].innerHTML = classPrediction;
       }
 
-      // ✅ ส่งค่าเฉพาะ class ที่มั่นใจ > 0.8
+      // ✅ ส่งข้อความตรง ๆ ถ้ามั่นใจ > 0.8
       if (bestProb > 0.8) {
-        client.publish(topic, JSON.stringify({ shape: bestClass, confidence: bestProb.toFixed(2) }));
-        console.log("📤 ส่งค่าไป MQTT:", bestClass, bestProb.toFixed(2));
+        let message = "";
+        if (bestClass === "Circle") message = "วงกลม";
+        else if (bestClass === "Triangle") message = "สามเหลี่ยม";
+        else if (bestClass === "Square") message = "สี่เหลี่ยม";
+
+        if (message !== "") {
+          client.publish(topic, message);
+          console.log("📤 ส่งค่าไป MQTT:", message);
+        }
       }
     }
 
